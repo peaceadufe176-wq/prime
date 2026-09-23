@@ -20,8 +20,9 @@ WHATSAPP_LINK = "https://whatsapp.com/channel/0029Vb5ZFQTHAdNcCXSdtg0E"
 # ⚠️ REPLACE YOUR_USERNAME WITH YOUR GITHUB USERNAME
 BANNER_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/prime-rewards-bot/main/assets/prime_banner.jpg"
 
-# === REMINDER SETTINGS ===
-REMINDER_DELAY = 2 * 60 * 60  # 2 hours in seconds
+# === TIMING SETTINGS ===
+DELAY_BEFORE_CONTENT = 5     # Seconds to wait before sending content
+REMINDER_DELAY = 2 * 60 * 60 # 2 hours in seconds
 
 # === LOGGING ===
 logging.basicConfig(
@@ -56,12 +57,6 @@ class Storage:
         if user_id not in self.data:
             self.data[user_id] = {
                 'user_id': user_id,
-                'points': 0,
-                'total_earned': 0,
-                'prime_tier': 0,
-                'prime_expiry': None,
-                'daily_streak': 0,
-                'last_daily': None,
                 'reminder_sent': False,
                 'reminder_time': None,
                 'username': '',
@@ -83,20 +78,23 @@ class Storage:
 storage = Storage()
 
 # === TELEGRAM API HELPERS ===
-def send_photo(chat_id, photo_url, caption, parse_mode='Markdown'):
-    """Send photo with caption"""
+def send_photo(chat_id, photo_url, caption="", parse_mode='Markdown'):
+    """Send photo with optional caption"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+    payload = {
+        'chat_id': chat_id,
+        'photo': photo_url
+    }
+    if caption:
+        payload['caption'] = caption
+        payload['parse_mode'] = parse_mode
+    
     try:
-        response = requests.post(url, json={
-            'chat_id': chat_id,
-            'photo': photo_url,
-            'caption': caption,
-            'parse_mode': parse_mode
-        }, timeout=15)
+        response = requests.post(url, json=payload, timeout=15)
         if response.status_code == 200:
-            logger.info(f"Photo sent to {chat_id}")
+            logger.info(f"✅ Photo sent to {chat_id}")
         else:
-            logger.error(f"Photo failed: {response.text}")
+            logger.error(f"❌ Photo failed: {response.text}")
         return response.json()
     except Exception as e:
         logger.error(f"Send photo error: {e}")
@@ -109,10 +107,11 @@ def send_message(chat_id, text, parse_mode='Markdown'):
         response = requests.post(url, json={
             'chat_id': chat_id,
             'text': text,
-            'parse_mode': parse_mode
+            'parse_mode': parse_mode,
+            'disable_web_page_preview': False
         }, timeout=10)
         if response.status_code == 200:
-            logger.info(f"Message sent to {chat_id}")
+            logger.info(f"✅ Message sent to {chat_id}")
         return response.json()
     except Exception as e:
         logger.error(f"Send message error: {e}")
@@ -142,63 +141,22 @@ def delete_webhook():
         logger.error(f"Delete webhook error: {e}")
         return False
 
-# === PRIME SYSTEM ===
-PRIME_TIERS = {
-    0: {'name': 'Free', 'emoji': '🔓', 'price': 0, 'duration': 0},
-    1: {'name': 'Basic Prime', 'emoji': '⭐', 'price': 50, 'duration': 7},
-    2: {'name': 'Premium Prime', 'emoji': '💎', 'price': 150, 'duration': 14},
-    3: {'name': 'Ultimate Prime', 'emoji': '👑', 'price': 300, 'duration': 30}
-}
-
-def get_prime_info(tier):
-    return PRIME_TIERS.get(tier, PRIME_TIERS[0])
-
-def is_prime_active(user):
-    if not user.get('prime_expiry'):
-        return False
-    try:
-        expiry = datetime.fromisoformat(user['prime_expiry'])
-        return datetime.now() < expiry and user.get('prime_tier', 0) > 0
-    except:
-        return False
-
-def get_prime_days_left(user):
-    if not user.get('prime_expiry'):
-        return 0
-    try:
-        expiry = datetime.fromisoformat(user['prime_expiry'])
-        diff = expiry - datetime.now()
-        return max(0, diff.days)
-    except:
-        return 0
-
-def get_time_until(iso_time):
-    if not iso_time:
-        return "Available now!"
-    try:
-        last = datetime.fromisoformat(iso_time)
-        next_time = last + timedelta(hours=24)
-        now = datetime.now()
-        if now >= next_time:
-            return "Available now!"
-        diff = next_time - now
-        h = diff.seconds // 3600
-        m = (diff.seconds % 3600) // 60
-        return f"{h}h {m}m"
-    except:
-        return "Available now!"
-
 # === REMINDER SYSTEM ===
 def schedule_reminder(chat_id, user_id, first_name):
-    """Schedule a 2-hour reminder for the user"""
+    """Schedule a 2-hour reminder"""
     def reminder_worker():
         logger.info(f"⏰ Reminder thread started for {user_id}, waiting 2 hours...")
         time.sleep(REMINDER_DELAY)
         
         try:
-            send_photo(
+            # Send reminder image first
+            send_photo(chat_id, BANNER_URL)
+            
+            # Then send reminder content
+            time.sleep(3)
+            
+            send_message(
                 chat_id,
-                BANNER_URL,
                 f"""
 ⏰ *REMINDER!*
 
@@ -217,8 +175,6 @@ Hey {first_name}! 👋
 {WHATSAPP_LINK}
 
 ⚠️ Forex trading involves risk. Past performance does not guarantee future results.
-
-🔥 *Use /daily to claim your reward!* 🎁
                 """
             )
             logger.info(f"✅ Reminder sent to {chat_id}")
@@ -235,9 +191,15 @@ Hey {first_name}! 👋
     thread.start()
     logger.info(f"⏰ Reminder scheduled for {chat_id} in 2 hours")
 
-# === COMMAND HANDLERS ===
+# === MAIN WELCOME FLOW ===
 def handle_start(chat_id, user_data):
-    """New user starts the bot - send banner + links + schedule reminder"""
+    """
+    Welcome flow:
+    1. Send image (from GitHub)
+    2. Wait a few seconds
+    3. Send content with links
+    4. Schedule 2-hour reminder
+    """
     user_id = str(chat_id)
     user = storage.get_user(user_id)
     user['username'] = user_data.get('username', '')
@@ -248,25 +210,16 @@ def handle_start(chat_id, user_data):
     
     first_name = user['first_name']
     
-    # === STEP 1: Send banner image with welcome ===
-    welcome_caption = f"""
-👋 *Welcome to Prime Rewards, {first_name}!*
-
-💎 Your journey to premium rewards starts here!
-
-🎁 *What you get:*
-• Daily rewards with bonus multipliers
-• 3 Prime tiers to unlock
-• Exclusive premium perks
-• Weekly bonuses
-
-*Starting your Prime experience...*
-    """
+    # === STEP 1: Send image first ===
+    logger.info(f"📤 Step 1: Sending image to {chat_id}")
+    send_photo(chat_id, BANNER_URL, f"👋 *Welcome, {first_name}!*")
     
-    send_photo(chat_id, BANNER_URL, welcome_caption)
-    time.sleep(1)
+    # === STEP 2: Wait a few seconds ===
+    logger.info(f"⏳ Step 2: Waiting {DELAY_BEFORE_CONTENT} seconds...")
+    time.sleep(DELAY_BEFORE_CONTENT)
     
-    # === STEP 2: Send Billionaires Forex Academy info ===
+    # === STEP 3: Send content with links ===
+    logger.info(f"📤 Step 3: Sending content to {chat_id}")
     send_message(
         chat_id,
         f"""
@@ -285,40 +238,18 @@ def handle_start(chat_id, user_data):
 ⚠️ Forex trading involves risk. Past performance does not guarantee future results.
         """
     )
-    time.sleep(1)
     
-    # === STEP 3: Schedule 2-hour reminder ===
+    # === STEP 4: Schedule 2-hour reminder ===
     if not user.get('reminder_sent', False):
         schedule_reminder(chat_id, user_id, first_name)
-    
-    # === STEP 4: Send command menu ===
-    time.sleep(1)
-    
+
+# === HANDLE /channels COMMAND (optional) ===
+def handle_channels(chat_id):
+    """Send channels when user asks"""
+    send_photo(chat_id, BANNER_URL)
+    time.sleep(3)
     send_message(
         chat_id,
-        f"""
-📋 *AVAILABLE COMMANDS*
-
-💰 *Rewards:*
-/daily - Claim daily reward 📅
-/prime - Check Prime status 🌟
-/primeupgrade - Upgrade tier 📈
-/profile - Your profile 👤
-/leaderboard - Top players 🏆
-
-📢 *Channels:*
-/channels - View all channels 📱
-/help - All commands 📚
-
-🔥 *Use /daily to claim your first reward!*
-        """
-    )
-
-def handle_channels(chat_id):
-    """Send channels on demand"""
-    send_photo(
-        chat_id,
-        BANNER_URL,
         f"""
 🤖 *Billionaires Forex Academy*
 
@@ -333,225 +264,6 @@ def handle_channels(chat_id):
 {WHATSAPP_LINK}
 
 ⚠️ Forex trading involves risk. Past performance does not guarantee future results.
-        """
-    )
-
-def handle_daily(chat_id):
-    user_id = str(chat_id)
-    user = storage.get_user(user_id)
-    now = datetime.now()
-    
-    if user.get('last_daily'):
-        try:
-            last = datetime.fromisoformat(user['last_daily'])
-            if now - last < timedelta(hours=24):
-                time_left = get_time_until(user['last_daily'])
-                send_message(
-                    chat_id,
-                    f"""
-⏳ *Already Claimed Today!*
-━━━━━━━━━━━━━━━━
-🕐 Next claim in: {time_left}
-
-📅 Streak: {user['daily_streak']} days
-💪 Keep going!
-                    """
-                )
-                return
-        except:
-            pass
-    
-    if user.get('last_daily'):
-        try:
-            last = datetime.fromisoformat(user['last_daily'])
-            if now - last < timedelta(hours=48):
-                user['daily_streak'] += 1
-            else:
-                user['daily_streak'] = 1
-        except:
-            user['daily_streak'] = 1
-    else:
-        user['daily_streak'] = 1
-    
-    base = 10
-    prime_bonus = 0
-    if is_prime_active(user):
-        tier = user.get('prime_tier', 0)
-        prime_bonus = {1: 5, 2: 10, 3: 20}.get(tier, 0)
-    
-    streak_bonus = (user['daily_streak'] // 7) * 5
-    total = base + prime_bonus + streak_bonus
-    
-    user['points'] += total
-    user['total_earned'] = user.get('total_earned', 0) + total
-    user['last_daily'] = now.isoformat()
-    storage.save_user(user_id, user)
-    
-    prime_info = get_prime_info(user.get('prime_tier', 0))
-    
-    send_message(
-        chat_id,
-        f"""
-🎉 *Daily Reward Claimed!*
-━━━━━━━━━━━━━━━━
-💰 *+{total} points*
-📊 Base: {base}
-{prime_info['emoji']} Prime Bonus: +{prime_bonus}
-📅 Streak: {user['daily_streak']} days
-
-💵 Total: {user['points']} points
-
-Come back tomorrow! 🚀
-        """
-    )
-
-def handle_prime(chat_id):
-    user_id = str(chat_id)
-    user = storage.get_user(user_id)
-    
-    tier = user.get('prime_tier', 0)
-    prime_info = get_prime_info(tier)
-    active = is_prime_active(user)
-    days_left = get_prime_days_left(user)
-    
-    send_message(
-        chat_id,
-        f"""
-🌟 *PRIME STATUS*
-━━━━━━━━━━━━━━━━
-{prime_info['emoji']} *Tier: {prime_info['name']}*
-{'✅ Active' if active else '❌ Not Active'}
-📅 Days Left: {days_left}
-
-💰 Points: {user['points']}
-📅 Streak: {user['daily_streak']} days
-
-📈 *Upgrade Options:*
-⭐ Basic Prime - 50 pts (7 days)
-💎 Premium Prime - 150 pts (14 days)
-👑 Ultimate Prime - 300 pts (30 days)
-
-Use /primeupgrade to upgrade! 🚀
-        """
-    )
-
-def handle_primeupgrade(chat_id):
-    user_id = str(chat_id)
-    user = storage.get_user(user_id)
-    
-    current_tier = user.get('prime_tier', 0)
-    next_tier = current_tier + 1 if current_tier < 3 else None
-    
-    if not next_tier:
-        send_message(chat_id, "👑 You already have Ultimate Prime!")
-        return
-    
-    tier_info = PRIME_TIERS[next_tier]
-    
-    if user['points'] < tier_info['price']:
-        send_message(
-            chat_id,
-            f"""
-❌ *Insufficient Points!*
-━━━━━━━━━━━━━━━━
-💰 Need: {tier_info['price']} points
-💵 You have: {user['points']}
-📊 Need {tier_info['price'] - user['points']} more
-
-💡 Earn more by:
-• Daily claims
-• Streaks
-            """
-        )
-        return
-    
-    user['points'] -= tier_info['price']
-    user['prime_tier'] = next_tier
-    user['prime_expiry'] = (datetime.now() + timedelta(days=tier_info['duration'])).isoformat()
-    storage.save_user(user_id, user)
-    
-    send_message(
-        chat_id,
-        f"""
-🎉 *Prime Upgrade Successful!*
-━━━━━━━━━━━━━━━━
-{tier_info['emoji']} *New Tier: {tier_info['name']}*
-📅 Duration: {tier_info['duration']} days
-💰 Points Remaining: {user['points']}
-
-Enjoy your new Prime status! 🌟
-        """
-    )
-
-def handle_profile(chat_id):
-    user_id = str(chat_id)
-    user = storage.get_user(user_id)
-    tier = user.get('prime_tier', 0)
-    prime_info = get_prime_info(tier)
-    days_left = get_prime_days_left(user)
-    
-    send_message(
-        chat_id,
-        f"""
-👤 *YOUR PROFILE*
-━━━━━━━━━━━━━━━━
-👤 {user.get('first_name', 'User')}
-📛 @{user.get('username', 'N/A')}
-
-{prime_info['emoji']} *Prime: {prime_info['name']}*
-📅 Days Left: {days_left}
-
-💰 Points: {user['points']}
-⭐ Total Earned: {user.get('total_earned', 0)}
-📅 Streak: {user['daily_streak']} days
-        """
-    )
-
-def handle_leaderboard(chat_id):
-    all_users = storage.get_all_users()
-    sorted_users = sorted(
-        [(uid, data) for uid, data in all_users.items()],
-        key=lambda x: x[1].get('points', 0),
-        reverse=True
-    )[:10]
-    
-    if not sorted_users:
-        send_message(chat_id, "No users yet! Be the first! 🏆")
-        return
-    
-    message = "🏆 *PRIME LEADERBOARD*\n━━━━━━━━━━━━━━━━\n\n"
-    for i, (uid, data) in enumerate(sorted_users, 1):
-        medal = '🥇' if i == 1 else '🥈' if i == 2 else '🥉' if i == 3 else f"{i}."
-        name = data.get('username', data.get('first_name', f"User{uid}"))
-        points = data.get('points', 0)
-        tier = get_prime_info(data.get('prime_tier', 0))
-        message += f"{medal} @{name} {tier['emoji']} - {points} pts\n"
-    
-    send_message(chat_id, message)
-
-def handle_help(chat_id):
-    send_message(
-        chat_id,
-        """
-📚 *PRIME REWARDS COMMANDS*
-━━━━━━━━━━━━━━━━
-
-💰 *Rewards:*
-/daily - Claim daily reward
-/prime - Check Prime status
-/primeupgrade - Upgrade tier
-/profile - Your profile
-/leaderboard - Top players
-
-📢 *Channels:*
-/channels - View Telegram & WhatsApp
-
-📊 *Prime Tiers:*
-⭐ Basic - 50 pts (7 days)
-💎 Premium - 150 pts (14 days)
-👑 Ultimate - 300 pts (30 days)
-
-💡 *Earn points daily with /daily!*
         """
     )
 
@@ -582,25 +294,29 @@ def process_updates():
                         
                         if text.startswith('/start'):
                             handle_start(chat_id, user_data)
-                        elif text.startswith('/help'):
-                            handle_help(chat_id)
                         elif text.startswith('/channels'):
                             handle_channels(chat_id)
-                        elif text.startswith('/daily'):
-                            handle_daily(chat_id)
-                        elif text.startswith('/prime'):
-                            if text.startswith('/primeupgrade'):
-                                handle_primeupgrade(chat_id)
-                            else:
-                                handle_prime(chat_id)
-                        elif text.startswith('/profile'):
-                            handle_profile(chat_id)
-                        elif text.startswith('/leaderboard'):
-                            handle_leaderboard(chat_id)
                         else:
+                            # Send the content for any other message
+                            send_photo(chat_id, BANNER_URL)
+                            time.sleep(3)
                             send_message(
                                 chat_id,
-                                "❓ Unknown command. Use /help to see available commands."
+                                f"""
+🤖 *Billionaires Forex Academy*
+
+📈 Get forex education, market insights, trading updates, and information about our automated trading tools.
+💡 Learn smarter. Trade with discipline. Stay informed.
+
+📲 *Join our communities:*
+🔵 *Telegram:*
+{TELEGRAM_CHANNEL}
+
+🟢 *WhatsApp Channel:*
+{WHATSAPP_LINK}
+
+⚠️ Forex trading involves risk. Past performance does not guarantee future results.
+                                """
                             )
             
             time.sleep(2)
@@ -616,11 +332,9 @@ app = Flask(__name__)
 def home():
     all_users = storage.get_all_users()
     return f"""
-    <h1>🌟 Prime Rewards Bot</h1>
+    <h1>🌟 Billionaires Forex Academy Bot</h1>
     <p>Bot is running!</p>
     <p>Users: {len(all_users)}</p>
-    <p>Telegram: {TELEGRAM_CHANNEL}</p>
-    <p>WhatsApp: {WHATSAPP_LINK}</p>
     <p>Status: ✅ Active</p>
     """
 
@@ -629,16 +343,17 @@ def stats_route():
     all_users = storage.get_all_users()
     return jsonify({
         'users': len(all_users),
-        'total_points': sum(data.get('points', 0) for data in all_users.values())
+        'reminders_sent': sum(1 for d in all_users.values() if d.get('reminder_sent', False))
     })
 
 # === MAIN ===
 def main():
     logger.info("=" * 50)
-    logger.info("Starting Prime Rewards Bot...")
+    logger.info("Starting Billionaires Forex Academy Bot...")
     logger.info(f"Telegram: {TELEGRAM_CHANNEL}")
     logger.info(f"WhatsApp: {WHATSAPP_LINK}")
     logger.info(f"Banner: {BANNER_URL[:70]}...")
+    logger.info(f"Content delay: {DELAY_BEFORE_CONTENT} seconds")
     logger.info(f"Reminder: {REMINDER_DELAY // 3600} hours")
     logger.info("=" * 50)
     
