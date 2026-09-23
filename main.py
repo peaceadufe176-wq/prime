@@ -16,13 +16,12 @@ DATA_FILE = 'prime_users.json'
 TELEGRAM_CHANNEL = "https://t.me/+Yr8yI8DrvLkyYzA0"
 WHATSAPP_LINK = "https://whatsapp.com/channel/0029Vb5ZFQTHAdNcCXSdtg0E"
 
-# === YOUR BANNER IMAGE ===
-# ⚠️ REPLACE YOUR_USERNAME WITH YOUR GITHUB USERNAME
-BANNER_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/prime-rewards-bot/main/assets/prime_banner.jpg"
+# === YOUR BANNER IMAGE (correct URL) ===
+BANNER_URL = "https://raw.githubusercontent.com/peaceadufe176-wq/prime/main/prime_banner.jpg"
 
 # === TIMING SETTINGS ===
-DELAY_BEFORE_CONTENT = 5     # Seconds to wait before sending content
-REMINDER_DELAY = 2 * 60 * 60 # 2 hours in seconds
+DELAY_BEFORE_CONTENT = 5      # Seconds before sending content
+REMINDER_DELAY = 2 * 60 * 60  # 2 hours
 
 # === LOGGING ===
 logging.basicConfig(
@@ -88,14 +87,15 @@ def send_photo(chat_id, photo_url, caption="", parse_mode='Markdown'):
     if caption:
         payload['caption'] = caption
         payload['parse_mode'] = parse_mode
-    
+
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=20)
         if response.status_code == 200:
             logger.info(f"✅ Photo sent to {chat_id}")
+            return response.json()
         else:
             logger.error(f"❌ Photo failed: {response.text}")
-        return response.json()
+            return None
     except Exception as e:
         logger.error(f"Send photo error: {e}")
         return None
@@ -141,28 +141,11 @@ def delete_webhook():
         logger.error(f"Delete webhook error: {e}")
         return False
 
-# === REMINDER SYSTEM ===
-def schedule_reminder(chat_id, user_id, first_name):
-    """Schedule a 2-hour reminder"""
-    def reminder_worker():
-        logger.info(f"⏰ Reminder thread started for {user_id}, waiting 2 hours...")
-        time.sleep(REMINDER_DELAY)
-        
-        try:
-            # Send reminder image first
-            send_photo(chat_id, BANNER_URL)
-            
-            # Then send reminder content
-            time.sleep(3)
-            
-            send_message(
-                chat_id,
-                f"""
-⏰ *REMINDER!*
-
-Hey {first_name}! 👋
-
-🤖 *Billionaires Forex Academy*
+# === CONTENT MESSAGE ===
+def get_content_message(first_name=""):
+    greeting = f"Hey {first_name}! 👋\n\n" if first_name else ""
+    return f"""
+{greeting}🤖 *Billionaires Forex Academy*
 
 📈 Get forex education, market insights, trading updates, and information about our automated trading tools.
 💡 Learn smarter. Trade with discipline. Stay informed.
@@ -175,18 +158,32 @@ Hey {first_name}! 👋
 {WHATSAPP_LINK}
 
 ⚠️ Forex trading involves risk. Past performance does not guarantee future results.
-                """
-            )
+"""
+
+# === REMINDER SYSTEM ===
+def schedule_reminder(chat_id, user_id, first_name):
+    """Schedule a 2-hour reminder"""
+    def reminder_worker():
+        logger.info(f"⏰ Reminder thread started for {user_id}, waiting 2 hours...")
+        time.sleep(REMINDER_DELAY)
+
+        try:
+            # Send banner image first
+            send_photo(chat_id, BANNER_URL)
+
+            # Wait 3 seconds then send content
+            time.sleep(3)
+            send_message(chat_id, get_content_message(first_name))
             logger.info(f"✅ Reminder sent to {chat_id}")
-            
+
             user = storage.get_user(str(user_id))
             user['reminder_sent'] = True
             user['reminder_time'] = datetime.now().isoformat()
             storage.save_user(str(user_id), user)
-            
+
         except Exception as e:
             logger.error(f"Reminder error: {e}")
-    
+
     thread = threading.Thread(target=reminder_worker, daemon=True)
     thread.start()
     logger.info(f"⏰ Reminder scheduled for {chat_id} in 2 hours")
@@ -194,9 +191,8 @@ Hey {first_name}! 👋
 # === MAIN WELCOME FLOW ===
 def handle_start(chat_id, user_data):
     """
-    Welcome flow:
-    1. Send image (from GitHub)
-    2. Wait a few seconds
+    1. Send image
+    2. Wait 5 seconds
     3. Send content with links
     4. Schedule 2-hour reminder
     """
@@ -207,120 +203,60 @@ def handle_start(chat_id, user_data):
     user['last_name'] = user_data.get('last_name', '')
     user['last_active'] = datetime.now().isoformat()
     storage.save_user(user_id, user)
-    
+
     first_name = user['first_name']
-    
+
     # === STEP 1: Send image first ===
     logger.info(f"📤 Step 1: Sending image to {chat_id}")
-    send_photo(chat_id, BANNER_URL, f"👋 *Welcome, {first_name}!*")
-    
-    # === STEP 2: Wait a few seconds ===
+    send_photo(chat_id, BANNER_URL)
+
+    # === STEP 2: Wait 5 seconds ===
     logger.info(f"⏳ Step 2: Waiting {DELAY_BEFORE_CONTENT} seconds...")
     time.sleep(DELAY_BEFORE_CONTENT)
-    
+
     # === STEP 3: Send content with links ===
     logger.info(f"📤 Step 3: Sending content to {chat_id}")
-    send_message(
-        chat_id,
-        f"""
-🤖 *Billionaires Forex Academy*
+    send_message(chat_id, get_content_message())
 
-📈 Get forex education, market insights, trading updates, and information about our automated trading tools.
-💡 Learn smarter. Trade with discipline. Stay informed.
-
-📲 *Join our communities:*
-🔵 *Telegram:*
-{TELEGRAM_CHANNEL}
-
-🟢 *WhatsApp Channel:*
-{WHATSAPP_LINK}
-
-⚠️ Forex trading involves risk. Past performance does not guarantee future results.
-        """
-    )
-    
     # === STEP 4: Schedule 2-hour reminder ===
     if not user.get('reminder_sent', False):
         schedule_reminder(chat_id, user_id, first_name)
-
-# === HANDLE /channels COMMAND (optional) ===
-def handle_channels(chat_id):
-    """Send channels when user asks"""
-    send_photo(chat_id, BANNER_URL)
-    time.sleep(3)
-    send_message(
-        chat_id,
-        f"""
-🤖 *Billionaires Forex Academy*
-
-📈 Get forex education, market insights, trading updates, and information about our automated trading tools.
-💡 Learn smarter. Trade with discipline. Stay informed.
-
-📲 *Join our communities:*
-🔵 *Telegram:*
-{TELEGRAM_CHANNEL}
-
-🟢 *WhatsApp Channel:*
-{WHATSAPP_LINK}
-
-⚠️ Forex trading involves risk. Past performance does not guarantee future results.
-        """
-    )
 
 # === POLLING ===
 def process_updates():
     last_update_id = 0
     logger.info("Starting polling loop...")
-    
+
     delete_webhook()
-    
+
     while True:
         try:
             updates = get_updates(last_update_id + 1 if last_update_id else None)
-            
+
             for update in updates:
                 update_id = update.get('update_id')
                 if update_id:
                     last_update_id = update_id
-                
+
                 if 'message' in update:
                     msg = update['message']
                     chat_id = msg['chat']['id']
                     user_data = msg.get('from', {})
-                    
+
                     if 'text' in msg:
                         text = msg['text']
                         logger.info(f"Command from {chat_id}: {text}")
-                        
+
                         if text.startswith('/start'):
                             handle_start(chat_id, user_data)
-                        elif text.startswith('/channels'):
-                            handle_channels(chat_id)
                         else:
-                            # Send the content for any other message
+                            # For any other message, send image + content
                             send_photo(chat_id, BANNER_URL)
                             time.sleep(3)
-                            send_message(
-                                chat_id,
-                                f"""
-🤖 *Billionaires Forex Academy*
+                            send_message(chat_id, get_content_message())
 
-📈 Get forex education, market insights, trading updates, and information about our automated trading tools.
-💡 Learn smarter. Trade with discipline. Stay informed.
-
-📲 *Join our communities:*
-🔵 *Telegram:*
-{TELEGRAM_CHANNEL}
-
-🟢 *WhatsApp Channel:*
-{WHATSAPP_LINK}
-
-⚠️ Forex trading involves risk. Past performance does not guarantee future results.
-                                """
-                            )
-            
             time.sleep(2)
-            
+
         except Exception as e:
             logger.error(f"Process updates error: {e}")
             time.sleep(5)
@@ -352,15 +288,15 @@ def main():
     logger.info("Starting Billionaires Forex Academy Bot...")
     logger.info(f"Telegram: {TELEGRAM_CHANNEL}")
     logger.info(f"WhatsApp: {WHATSAPP_LINK}")
-    logger.info(f"Banner: {BANNER_URL[:70]}...")
+    logger.info(f"Banner: {BANNER_URL}")
     logger.info(f"Content delay: {DELAY_BEFORE_CONTENT} seconds")
     logger.info(f"Reminder: {REMINDER_DELAY // 3600} hours")
     logger.info("=" * 50)
-    
+
     poll_thread = threading.Thread(target=process_updates, daemon=True)
     poll_thread.start()
     logger.info("Polling thread started")
-    
+
     logger.info(f"Starting Flask server on port {PORT}")
     app.run(host='0.0.0.0', port=PORT)
 
